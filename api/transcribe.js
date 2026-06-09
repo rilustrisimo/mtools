@@ -59,12 +59,20 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Audio extraction failed', code: 'FFMPEG_FAILED' });
   }
 
-  // ── Whisper inference ────────────────────────────────────────────────────
+  // ── HuggingFace inference ────────────────────────────────────────────────
   let text;
   try {
     text = await transcribeBuffer(audioBuffer);
   } catch (err) {
     console.error('[transcribe] whisper error:', err.message);
+    if (err.code === 'MODEL_LOADING') {
+      // HF model is cold — tell the client to retry after eta seconds
+      return res.status(503).json({
+        error:          'HuggingFace model is loading, retry shortly',
+        code:           'MODEL_LOADING',
+        retry_after_s:  err.eta ?? 20,
+      });
+    }
     return res.status(500).json({ error: 'Transcription failed', code: 'WHISPER_FAILED' });
   }
 
