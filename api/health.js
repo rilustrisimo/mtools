@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     status:           'ok',
     model:            MODEL,
     model_cached:     modelCached,
-    chunk_duration_s: parseInt(process.env.CHUNK_DURATION_S || '60', 10),
+    chunk_duration_s: parseInt(process.env.CHUNK_DURATION_S || '30', 10),
     version:          VERSION,
   });
 }

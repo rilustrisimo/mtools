@@ -37,7 +37,7 @@ export default async function handler(req, res) {
   }
 
   // ── Chunk math ───────────────────────────────────────────────────────────
-  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '60', 10);
+  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '30', 10);
   const totalChunks   = Math.ceil(duration / chunkDuration);
   const startSeconds  = chunkIdx * chunkDuration;
 
