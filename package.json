@@ -4,7 +4,7 @@
   "description": "EMEI AI Services — self-hosted serverless AI hub on Vercel. Transcribe Wistia videos with local Whisper. No external AI API keys required.",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "scripts": {
     "dev": "vercel dev",

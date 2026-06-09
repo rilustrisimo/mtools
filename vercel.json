@@ -1,11 +1,9 @@
 {
   "functions": {
     "api/transcribe.js": {
-      "memory": 1024,
       "maxDuration": 10
     },
     "api/health.js": {
-      "memory": 128,
       "maxDuration": 5
     }
   },
