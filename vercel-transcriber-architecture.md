@@ -21,6 +21,8 @@
 10. [Vercel Plan Considerations](#10-vercel-plan-considerations)
 11. [Security Model](#11-security-model)
 12. [Future Services (The Hub)](#12-future-services-the-hub)
+13. [Browser Transcription Mode](#13-browser-transcription-mode)
+14. [File Skeletons — api/audio.js](#14-file-skeletons--apiaudiojs)
 
 ---
 
@@ -183,20 +185,21 @@ Returns service status and model cache state.
 ## 4. Project Structure
 
 ```
-thinkific-transcriber/
+mtools/
 │
 ├── api/
-│   ├── transcribe.js         ← main endpoint (POST /api/transcribe)
-│   └── health.js             ← status check (GET /api/health)
+│   ├── transcribe.js         ← POST /api/transcribe  (server-side: ffmpeg + Groq Whisper)
+│   ├── audio.js              ← GET  /api/audio       (browser-side: returns raw WAV chunk)
+│   └── health.js             ← GET  /api/health      (status check)
 │
 ├── lib/
 │   ├── wistia.js             ← fetch video URL + duration from Wistia JSON
 │   ├── audio.js              ← ffmpeg stream → WAV buffer extraction
-│   ├── whisper.js            ← @xenova/transformers pipeline + model cache
-│   └── auth.js               ← shared secret verification
+│   ├── whisper.js            ← Groq Whisper API call (server-side path only)
+│   └── auth.js               ← shared secret verification (timingSafeEqual)
 │
-├── package.json
-├── vercel.json               ← function config (memory, max duration)
+├── package.json              ← only ffmpeg-static; no AI/ML npm deps
+├── vercel.json               ← function maxDuration config + CORS headers
 └── .env.local                ← local dev env (never committed)
 ```
 
@@ -452,14 +455,26 @@ For **Vercel Pro** (60s timeout, 3GB memory):
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `API_SECRET` | YES | — | Shared secret for request auth. Set the same value in WordPress settings. |
-| `WHISPER_MODEL` | no | `Xenova/whisper-tiny` | HuggingFace model ID. Change to `Xenova/whisper-base` on Pro plan. |
-| `CHUNK_DURATION_S` | no | `60` | Audio seconds per chunk. Keep at 60 for Hobby, increase to 300 for Pro. |
+| `API_SECRET` | YES | — | Shared secret for all endpoint auth. Set the same value in WordPress settings. |
+| `GROQ_API_KEY` | YES (server path) | — | Groq API key for Whisper inference. Free at console.groq.com. |
+| `WHISPER_MODEL` | no | `whisper-large-v3` | Groq model ID for server-side path. |
+| `CHUNK_DURATION_S` | no | `30` | Audio seconds per chunk. 30s fits Hobby timeout; browser path has no limit. |
 
 **In WordPress (.env or WP options):**
 ```
 THINKIFIC_VERCEL_URL=https://your-app.vercel.app
 THINKIFIC_VERCEL_SECRET=same_value_as_API_SECRET
+```
+
+**vercel.json function config (current):**
+```json
+{
+  "functions": {
+    "api/transcribe.js": { "maxDuration": 30 },
+    "api/audio.js":      { "maxDuration": 15 },
+    "api/health.js":     { "maxDuration": 5  }
+  }
+}
 ```
 
 ---
@@ -676,5 +691,167 @@ export function verifySecret(secret) {
   const expected = process.env.API_SECRET;
   if (!expected || !secret) return false;
   return secret === expected; // constant-time compare not needed for this use case
+}
+```
+
+---
+
+## 13. Browser Transcription Mode
+
+### Why a browser path exists
+
+`/api/transcribe` runs Whisper inference on Vercel's CPU via the Groq API. Vercel
+Hobby has a 10-second function timeout and `api-inference.huggingface.co` is
+unreachable from Vercel's network. The browser path sidesteps both constraints
+entirely: Vercel only extracts audio (fast, no AI), the browser does inference
+locally via WebAssembly with no timeout and no API key.
+
+### How it works
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Browser (JavaScript)                                                 │
+│                                                                       │
+│  1. Load @xenova/transformers from unpkg / local bundle              │
+│     → pulls Xenova/whisper-tiny.en weights from HuggingFace CDN      │
+│       (~39 MB, cached in browser IndexedDB forever after first load) │
+│                                                                       │
+│  2. Loop: chunk_index = 0, 1, 2 …                                    │
+│     GET /api/audio?wistia_hash=xxx&chunk_index=N&secret=yyy           │
+│     ← 200 audio/wav  (raw 16kHz mono WAV, ~950 KB for 30s)           │
+│     or 204 No Content + X-Done: true  (all chunks processed)         │
+│                                                                       │
+│  3. Feed WAV buffer to Whisper pipeline                               │
+│     → result.text  (runs in Web Worker, non-blocking)                │
+│                                                                       │
+│  4. POST text + chunk_index to WordPress (AJAX / REST API)           │
+│     WordPress stores chunk, advances checkpoint                       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Response headers from `/api/audio`
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `audio/wav` |
+| `X-Chunk-Index` | requested chunk index |
+| `X-Total-Chunks` | total number of chunks for this video |
+| `X-Duration-S` | total video duration in seconds |
+| `X-Done` | `true` only on 204 (past last chunk) |
+
+### Comparison: server path vs browser path
+
+| | `/api/transcribe` (server) | `/api/audio` + browser Whisper |
+|---|---|---|
+| Inference runs on | Groq GPU (API call) | User's browser CPU/GPU (WASM) |
+| Timeout risk | None (Groq is fast) | None (browser has no timeout) |
+| API key needed | Yes (`GROQ_API_KEY`) | No |
+| Model quality | whisper-large-v3 | whisper-tiny.en |
+| Works headless | Yes (cron, WP-CLI) | No (needs open browser tab) |
+| Bandwidth (Vercel→client) | ~0 (text only) | ~950 KB per chunk |
+
+**Use the server path** for background cron jobs.
+**Use the browser path** for interactive/on-demand transcription in the admin UI.
+
+---
+
+## 14. File Skeletons — api/audio.js
+
+### `api/audio.js`
+```javascript
+/**
+ * GET /api/audio?wistia_hash=xxx&chunk_index=0&secret=xxx
+ *
+ * Returns a raw 16kHz mono WAV buffer for one chunk of a Wistia video.
+ * Designed for browser-side transcription: the browser feeds the WAV
+ * to @xenova/transformers (Whisper.js running in WebAssembly) and
+ * transcribes entirely client-side — no server inference, no timeout risk.
+ *
+ * Chunk metadata is returned in response headers:
+ *   X-Chunk-Index   : the requested chunk index
+ *   X-Total-Chunks  : total chunks for this video
+ *   X-Duration-S    : total video duration in seconds
+ *
+ * If chunk_index >= total_chunks the response is 204 No Content with
+ * X-Done: true so the browser knows transcription is complete.
+ */
+
+import { verifySecret }      from '../lib/auth.js';
+import { getVideoUrl }       from '../lib/wistia.js';
+import { extractAudioChunk } from '../lib/audio.js';
+
+const WISTIA_HASH_RE = /^[a-z0-9]{10,12}$/;
+
+export default async function handler(req, res) {
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'GET')    return res.status(405).json({ error: 'Method not allowed' });
+
+  const { wistia_hash, chunk_index, secret } = req.query;
+
+  if (!verifySecret(secret))
+    return res.status(401).json({ error: 'Unauthorized', code: 'INVALID_SECRET' });
+
+  if (!wistia_hash || !WISTIA_HASH_RE.test(wistia_hash))
+    return res.status(400).json({ error: 'Invalid wistia_hash', code: 'BAD_REQUEST' });
+
+  const chunkIdx = parseInt(chunk_index, 10);
+  if (!Number.isInteger(chunkIdx) || chunkIdx < 0)
+    return res.status(400).json({ error: 'chunk_index must be a non-negative integer', code: 'BAD_REQUEST' });
+
+  const { url, duration, error: wistiaError } = await getVideoUrl(wistia_hash);
+  if (!url)
+    return res.status(500).json({ error: wistiaError ?? 'Wistia fetch failed', code: 'WISTIA_FETCH_FAILED' });
+
+  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '30', 10);
+  const totalChunks   = Math.ceil(duration / chunkDuration);
+  const startSeconds  = chunkIdx * chunkDuration;
+
+  if (startSeconds >= duration) {
+    res.setHeader('X-Done', 'true');
+    res.setHeader('X-Total-Chunks', totalChunks);
+    res.setHeader('X-Duration-S', duration);
+    return res.status(204).end();
+  }
+
+  let audioBuffer;
+  try {
+    audioBuffer = await extractAudioChunk(url, startSeconds, chunkDuration);
+  } catch (err) {
+    console.error('[audio] ffmpeg error:', err.message);
+    return res.status(500).json({ error: 'Audio extraction failed', code: 'FFMPEG_FAILED' });
+  }
+
+  res.setHeader('Content-Type',   'audio/wav');
+  res.setHeader('Content-Length', audioBuffer.length);
+  res.setHeader('X-Chunk-Index',  chunkIdx);
+  res.setHeader('X-Total-Chunks', totalChunks);
+  res.setHeader('X-Duration-S',   duration);
+  res.setHeader('Cache-Control',  'private, no-store');
+  return res.status(200).send(audioBuffer);
+}
+```
+
+### Browser-side consumer (example)
+
+```javascript
+import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers';
+
+const transcriber = await pipeline(
+  'automatic-speech-recognition',
+  'Xenova/whisper-tiny.en'  // ~39 MB, cached in IndexedDB after first load
+);
+
+async function transcribeChunk(wistiaHash, chunkIndex, secret) {
+  const res = await fetch(
+    `/api/audio?wistia_hash=${wistiaHash}&chunk_index=${chunkIndex}&secret=${secret}`
+  );
+
+  if (res.status === 204) return { done: true };
+
+  const totalChunks = parseInt(res.headers.get('X-Total-Chunks'));
+  const wav = await res.arrayBuffer();
+  const result = await transcriber(wav);
+
+  return { text: result.text, totalChunks };
 }
 ```

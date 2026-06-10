@@ -3,6 +3,9 @@
     "api/transcribe.js": {
       "maxDuration": 30
     },
+    "api/audio.js": {
+      "maxDuration": 15
+    },
     "api/health.js": {
       "maxDuration": 5
     }
