@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/transcribe.js": {
-      "maxDuration": 30
+      "maxDuration": 10
     },
     "api/audio.js": {
       "maxDuration": 15
@@ -12,7 +12,24 @@
   },
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/transcribe",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "https://emeiglobal.com"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "POST, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type"
+        }
+      ]
+    },
+    {
+      "source": "/api/audio",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
@@ -20,11 +37,24 @@
         },
         {
           "key": "Access-Control-Allow-Methods",
-          "value": "GET, POST, OPTIONS"
+          "value": "GET, OPTIONS"
         },
         {
-          "key": "Access-Control-Allow-Headers",
-          "value": "Content-Type, Authorization"
+          "key": "Access-Control-Expose-Headers",
+          "value": "X-Total-Chunks, X-Chunk-Index, X-Duration-S, X-Done"
+        }
+      ]
+    },
+    {
+      "source": "/api/health",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, OPTIONS"
         }
       ]
     }

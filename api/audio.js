@@ -47,15 +47,15 @@ export default async function handler(req, res) {
   }
 
   // ── Chunk math ───────────────────────────────────────────────────────────
-  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '30', 10);
+  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '60', 10);
   const totalChunks   = Math.ceil(duration / chunkDuration);
   const startSeconds  = chunkIdx * chunkDuration;
 
   // Browser knows it's done
   if (startSeconds >= duration) {
+    res.setHeader('Access-Control-Expose-Headers', 'X-Total-Chunks, X-Done');
     res.setHeader('X-Done',         'true');
     res.setHeader('X-Total-Chunks', totalChunks);
-    res.setHeader('X-Duration-S',   duration);
     return res.status(204).end();
   }
 
@@ -69,6 +69,7 @@ export default async function handler(req, res) {
   }
 
   // ── Stream WAV to browser ─────────────────────────────────────────────────
+  res.setHeader('Access-Control-Expose-Headers', 'X-Total-Chunks, X-Chunk-Index, X-Duration-S');
   res.setHeader('Content-Type',   'audio/wav');
   res.setHeader('Content-Length', audioBuffer.length);
   res.setHeader('X-Chunk-Index',  chunkIdx);
