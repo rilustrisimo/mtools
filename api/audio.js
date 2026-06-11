@@ -1,9 +1,12 @@
 /**
  * GET /api/audio?wistia_hash=xxx&chunk_index=0&secret=xxx
  *
- * Returns a raw 16kHz mono WAV buffer for one chunk of a Wistia video.
- * Designed for browser-side transcription: the browser feeds the WAV
- * to @xenova/transformers (Whisper.js running in WebAssembly) and
+ * Returns a 16kHz mono MP3 buffer for one chunk of a Wistia video.
+ * MP3 at 16kbps is ~16x smaller than WAV (~120 KB vs ~1.9 MB per 60s chunk),
+ * which dramatically reduces Vercel Fast Origin Transfer usage.
+ *
+ * Designed for browser-side transcription: the browser feeds the MP3
+ * to @xenova/transformers (Whisper.js via WebAssembly/WebGPU) and
  * transcribes entirely client-side — no server inference, no timeout risk.
  *
  * Chunk metadata is returned in response headers:
@@ -59,22 +62,24 @@ export default async function handler(req, res) {
     return res.status(204).end();
   }
 
-  // ── Audio extraction ─────────────────────────────────────────────────────
+  // ── Audio extraction (MP3 @ 16kbps — ~16x smaller than WAV) ─────────────
   let audioBuffer;
   try {
-    audioBuffer = await extractAudioChunk(url, startSeconds, chunkDuration);
+    audioBuffer = await extractAudioChunk(url, startSeconds, chunkDuration, { format: 'mp3' });
   } catch (err) {
     console.error('[audio] ffmpeg error:', err.message);
     return res.status(500).json({ error: 'Audio extraction failed', code: 'FFMPEG_FAILED' });
   }
 
-  // ── Stream WAV to browser ─────────────────────────────────────────────────
+  // ── Stream MP3 to browser ─────────────────────────────────────────────────
+  // Cache-Control: public lets Vercel's CDN cache the chunk at the edge —
+  // same wistia_hash + chunk_index always produces identical bytes.
   res.setHeader('Access-Control-Expose-Headers', 'X-Total-Chunks, X-Chunk-Index, X-Duration-S');
-  res.setHeader('Content-Type',   'audio/wav');
+  res.setHeader('Content-Type',   'audio/mpeg');
   res.setHeader('Content-Length', audioBuffer.length);
   res.setHeader('X-Chunk-Index',  chunkIdx);
   res.setHeader('X-Total-Chunks', totalChunks);
   res.setHeader('X-Duration-S',   duration);
-  res.setHeader('Cache-Control',  'private, no-store');
+  res.setHeader('Cache-Control',  'public, max-age=3600, immutable');
   return res.status(200).send(audioBuffer);
 }
