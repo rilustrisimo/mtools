@@ -50,7 +50,7 @@ export default async function handler(req, res) {
   }
 
   // ── Chunk math ───────────────────────────────────────────────────────────
-  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '60', 10);
+  const chunkDuration = parseInt(process.env.CHUNK_DURATION_S || '30', 10);
   const totalChunks   = Math.ceil(duration / chunkDuration);
   const startSeconds  = chunkIdx * chunkDuration;
 
@@ -72,14 +72,20 @@ export default async function handler(req, res) {
   }
 
   // ── Stream MP3 to browser ─────────────────────────────────────────────────
-  // Cache-Control: public lets Vercel's CDN cache the chunk at the edge —
-  // same wistia_hash + chunk_index always produces identical bytes.
+  // Content is permanently immutable: same hash + chunk_index = same bytes always.
+  // max-age=31536000 (1 year) means Vercel CDN and browsers never re-request
+  // the same chunk. ETag allows cheap 304 revalidation if the cache expires.
+  const etag = `"${wistia_hash}-${chunkIdx}"`;
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
   res.setHeader('Access-Control-Expose-Headers', 'X-Total-Chunks, X-Chunk-Index, X-Duration-S');
   res.setHeader('Content-Type',   'audio/mpeg');
   res.setHeader('Content-Length', audioBuffer.length);
+  res.setHeader('ETag',           etag);
   res.setHeader('X-Chunk-Index',  chunkIdx);
   res.setHeader('X-Total-Chunks', totalChunks);
   res.setHeader('X-Duration-S',   duration);
-  res.setHeader('Cache-Control',  'public, max-age=3600, immutable');
+  res.setHeader('Cache-Control',  'public, max-age=31536000, immutable');
   return res.status(200).send(audioBuffer);
 }
